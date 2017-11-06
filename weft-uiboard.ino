@@ -1,7 +1,7 @@
+#include <waves.h>
+#include <Weftlib.h>
 #include <Wire.h> //Include arduino Wire Library to enable to I2C
 #include <Encoder.h>
-#include "Yurikleb_DRV2667.h"
-#include "waves.h"
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <elapsedMillis.h>
@@ -9,26 +9,21 @@
 #include <SPI.h>
 #include <SD.h>
 #include <SerialFlash.h>
-Yurikleb_DRV2667 drv;
 
-#define OLED_RESET 20 // not really used
-#define NUMFLAKES 10
-#define XPOS 0
-#define YPOS 1
-#define DELTAY 2
-#define LOGO16_GLCD_HEIGHT 16
-#define LOGO16_GLCD_WIDTH  16
 
+#define DISPLAY_PRESENT true
+
+#define OLED_RESET 20 // not really used, but req by gfx lib
 #define sw 8 // encoder's pushbutton switch
+Weft weft;
 Encoder myEnc(5, 6); // encoder A and B
 
 float minFreq = 10;
 float maxFreq = 400;
-
 float ff = 0;
-volatile int wavelabelV = 0;
-int wavelabel = 0;
-int wavelabelOld = 0;
+volatile int wavelabelV = 1;
+int wavelabel = 1;
+int wavelabelOld = 1;
 int encUpLimit = 300;
 int encLoLimit = 0;
 long newPosition = 0;
@@ -36,7 +31,7 @@ long oldPosition  = -999;
 char* wavelabels[] = {"SINE", "SQAR", "TRI", "NOIZ", "FILE"};
 char* filenames[] = {"SINE", "SQAR", "TRI", "NOIZ", "FILE"};
 elapsedMillis timeSincePlay;
-long waveformLength = 3000; //ms of waveform file to play, should eventually be dynamic
+unsigned long waveformLength = 3000; //ms of waveform file to play, should eventually be dynamic
 boolean playingDigital = false;
 boolean analogSet = false;
 byte analogGain = 0x07; // can be from 0x04 to 0x07
@@ -56,26 +51,7 @@ AudioConnection          patchCord4(theTriangle, 0, mixer1, 2);
 AudioConnection          patchCord5(mixer1, dac1);
 // GUItool: end automatically generated code
 
-
-static const unsigned char PROGMEM logo16_glcd_bmp[] =
-{ B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000,
-  B00110000, B00110000
-};
-#if (SSD1306_LCDHEIGHT != 32)
+#if (SSD1306_LCDHEIGHT != 64)
 #error("Height incorrect, please fix Adafruit_SSD1306.h!");
 #endif
 Adafruit_SSD1306 display(OLED_RESET);
@@ -100,11 +76,13 @@ void setup() {
   attachInterrupt(sw, swTriggered, FALLING);
   analogWriteResolution(12);
   // i2c peripherals setup
-  drv.begin();
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3D (for the 128x64)
-  display.setRotation(3); // 2:rotates screen 180º
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
+  weft.begin();
+  if (DISPLAY_PRESENT) {
+    display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3D (for the 128x64)
+    display.setRotation(2); // 2:rotates screen 180º, 3 is correct for WEFT Engine board
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+  }
   Serial.begin(9600);
   Serial.println("hey now");
 }
@@ -121,14 +99,16 @@ void loop() {
     //    Serial.println("change detected " + wavelabel);
     oldPosition = newPosition;
     wavelabelOld = wavelabel;
-    updateDisplay(newPosition);
+    if (DISPLAY_PRESENT) {
+      updateDisplay(newPosition);
+    }
     updateFreq(newPosition);
     switchTo(wavelabel);
   }
 
   if (playingDigital && (timeSincePlay > waveformLength)) {
     // retrigger the digital file if we are playing it
-    drv.playWaveGain(WaveForm_2, sizeof(WaveForm_2), digitalGain); //Play one of the Waveforms defined in waves.h;
+    weft.playWaveGain(WaveForm_2, sizeof(WaveForm_2), digitalGain); //Play one of the Waveforms defined in waves.h;
     timeSincePlay = 0;
     playingDigital = true;
     analogSet = false;
@@ -161,10 +141,10 @@ void updateFreq(int newPos) {
 
 void switchTo(int wave) {
   // mute all other waveforms, unmute waveform we want
-
-
-  if (wave == 4) {
+  if (wave == 4) { // TODO, un-hardcode this and match on "FILE" (enum? string compare?)
     Serial.print("file time");
+    // mute all analog channels
+    // TODO: not sure this is necessary? Testing needed.
     mixer1.gain(0, 0.0);
     mixer1.gain(1, 0.0);
     mixer1.gain(2, 0.0);
@@ -172,7 +152,7 @@ void switchTo(int wave) {
     analogSet = false;
     if (!playingDigital) {
       // play the digital file
-      drv.playWaveGain(WaveForm_2, sizeof(WaveForm_2), digitalGain); //Play one of the Waveforms defined in waves.h;
+      weft.playWaveGain(WaveForm_2, sizeof(WaveForm_2), digitalGain); //Play one of the Waveforms defined in waves.h;
       timeSincePlay = 0;
       playingDigital = true;
       analogSet = false;
@@ -182,9 +162,10 @@ void switchTo(int wave) {
       }
     }
   } else {
+    // if not in file-playback mode, set analog as needed
     playingDigital = false;
     if (!analogSet) {
-      drv.setToAnalogInputGain(analogGain);
+      weft.setToAnalogInputGain(analogGain);
       analogSet = true;
     }
     for (int i = 0; i < 4; i++) {
